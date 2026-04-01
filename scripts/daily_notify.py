@@ -1,164 +1,165 @@
 #!/usr/bin/env python3
 """
-Daily Mobility News Notifier
-Runs every day at 8 AM IST via GitHub Actions.
-If new mobility stories appeared in the last 24 hours,
-sends a push notification to all registered Expo devices.
+MovingTech Brief - Daily Push Notifier
+Runs daily at 8 AM IST via GitHub Actions.
+Sends Web Push notifications when >= 2 new mobility stories found.
 """
-
-import os, json, hashlib, urllib.request, urllib.parse, xml.etree.ElementTree as ET
+import os, json, hashlib, urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
+from xml.etree import ElementTree
 
-GH_PAT = os.environ["GH_PAT"]
-TOKEN_GIST_ID = os.environ["TOKEN_GIST_ID"]
-NOTIF_HISTORY_GIST_ID = os.environ.get("NOTIF_HISTORY_GIST_ID", TOKEN_GIST_ID)
+GH_PAT            = os.environ["GH_PAT"]
+TOKEN_GIST_ID     = os.environ["TOKEN_GIST_ID"]
+VAPID_PRIVATE_KEY = os.environ["VAPID_PRIVATE_KEY"]
+VAPID_PUBLIC_KEY  = os.environ["VAPID_PUBLIC_KEY"]
+VAPID_SUBJECT     = os.environ.get("VAPID_SUBJECT", "mailto:rahul.shankar@nammayatri.in")
 
-EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+HEADERS = {
+    "Authorization": f"token {GH_PAT}",
+    "Accept": "application/vnd.github.v3+json",
+    "Content-Type": "application/json",
+    "User-Agent": "mobility-notifier/1.0",
+}
 
-SEARCH_QUERIES = [
-    "Namma Yatri news",
-    "Ola Uber India ride hailing",
-    "Rapido bike taxi India",
-    "mobility tech India news",
-    "EV electric vehicle India news",
-    "autonomous vehicle news",
-    "Southeast Asia ride hailing Grab Gojek",
-    "mobility startup funding",
-    "metro rail expansion India",
-    "Waymo Tesla robotaxi news",
+QUERIES = [
+    "Namma Yatri OR Rapido OR Ola ride hailing India",
+    "Uber Ola Rapido India 2026",
+    "electric vehicle EV India 2026",
+    "ONDC mobility India",
+    "Grab GoTo Southeast Asia ride hailing",
+    "autonomous robotaxi 2026",
+    "ride hailing gig worker regulations 2026",
+    "public transit metro rail India 2026",
+    "mobility startup funding 2026",
+    "DiDi Bolt inDrive Latin America Africa",
 ]
 
-def gist_get(gist_id, filename):
-    req = urllib.request.Request(
-        f"https://api.github.com/gists/{gist_id}",
-        headers={"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json", "User-Agent": "mobility-notifier"}
-    )
-    with urllib.request.urlopen(req) as r:
-        data = json.loads(r.read())
-    return data["files"][filename]["content"]
-
-def gist_patch(gist_id, filename, content):
-    payload = json.dumps({"files": {filename: {"content": content}}}).encode()
-    req = urllib.request.Request(
-        f"https://api.github.com/gists/{gist_id}",
-        data=payload, method="PATCH",
-        headers={"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json", "User-Agent": "mobility-notifier"}
-    )
-    with urllib.request.urlopen(req) as r:
-        pass
-
-def fetch_rss(query):
-    encoded = urllib.parse.quote(query)
-    url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def fetch_rss(query, hours=24):
+    url = (f"https://news.google.com/rss/search?"
+           f"q={urllib.parse.quote(query)}&hl=en-IN&gl=IN&ceid=IN:en")
     try:
-        with urllib.request.urlopen(req, timeout=12) as r:
-            return r.read()
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            tree = ElementTree.parse(r)
     except Exception as e:
         print(f"  RSS error: {e}")
-        return b""
-
-def parse_pub_date(s):
-    for fmt in ["%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"]:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stories = []
+    for item in tree.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link  = (item.findtext("link")  or "").strip()
+        pub   = (item.findtext("pubDate") or "").strip()
+        if not title or not link:
+            continue
         try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return None
-
-def fetch_fresh_stories(cutoff):
-    seen_urls, stories = set(), []
-    for query in SEARCH_QUERIES:
-        xml = fetch_rss(query)
-        try:
-            root = ET.fromstring(xml)
-            channel = root.find("channel")
-            if not channel:
-                continue
-            for item in channel.findall("item"):
-                title = (item.findtext("title") or "").strip()
-                link = (item.findtext("link") or "").strip()
-                pub_dt = parse_pub_date(item.findtext("pubDate") or "")
-                source_el = item.find("source")
-                source = source_el.text.strip() if source_el is not None else ""
-                if not link or link in seen_urls:
-                    continue
-                if pub_dt and pub_dt < cutoff:
-                    continue
-                seen_urls.add(link)
-                stories.append({"title": title, "url": link, "pub_dt": pub_dt, "source": source})
+            pub_dt = datetime.strptime(pub, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
         except Exception:
-            pass
-    stories.sort(key=lambda x: x["pub_dt"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+            pub_dt = datetime.now(timezone.utc)
+        if pub_dt < cutoff:
+            continue
+        stories.append({"title": title, "url": link, "pub_dt": pub_dt})
     return stories
 
-def send_expo_notifications(tokens, title, body, data=None):
-    if not tokens:
-        print("No tokens registered — skipping push.")
-        return
-    messages = [{"to": t, "title": title, "body": body, "data": data or {}, "sound": "default"} for t in tokens]
-    payload = json.dumps(messages).encode()
-    req = urllib.request.Request(
-        EXPO_PUSH_URL,
-        data=payload,
-        headers={"Accept": "application/json", "Accept-Encoding": "gzip, deflate", "Content-Type": "application/json"}
-    )
+def gist_get(gist_id):
+    req = urllib.request.Request(f"https://api.github.com/gists/{gist_id}", headers=HEADERS)
     with urllib.request.urlopen(req) as r:
-        result = json.loads(r.read())
-    print(f"Push result: {result}")
+        return json.load(r)
+
+def gist_patch(gist_id, files):
+    payload = json.dumps({"files": files}).encode()
+    req = urllib.request.Request(
+        f"https://api.github.com/gists/{gist_id}",
+        data=payload, headers=HEADERS, method="PATCH")
+    with urllib.request.urlopen(req) as r:
+        print(f"  Gist patch -> {r.status}")
+
+def read_json_file(gist_data, filename, default):
+    f = gist_data.get("files", {}).get(filename)
+    if not f:
+        return default
+    try:
+        req = urllib.request.Request(f["raw_url"], headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.load(r)
+    except Exception as e:
+        print(f"  Error reading {filename}: {e}")
+        return default
+
+def send_web_push(subscription, title, body, url):
+    try:
+        from pywebpush import webpush
+        webpush(
+            subscription_info=subscription,
+            data=json.dumps({"title": title, "body": body, "url": url}),
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={
+                "sub": VAPID_SUBJECT,
+                "exp": int((datetime.now(timezone.utc) + timedelta(hours=12)).timestamp()),
+            },
+        )
+        return True
+    except Exception as e:
+        print(f"  Web push error: {e}")
+        return False
 
 def main():
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=24)
-    print(f"=== Daily Mobility Notifier === {now.strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"Looking for stories since {cutoff.strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"=== Daily Notifier - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ===")
+    gist_data     = gist_get(TOKEN_GIST_ID)
+    subscriptions = read_json_file(gist_data, "push_subs.json",    [])
+    notif_hashes  = set(read_json_file(gist_data, "notif_hashes.json", []))
+    print(f"  Subscriptions: {len(subscriptions)}, Known hashes: {len(notif_hashes)}")
 
-    # Load registered push tokens
-    tokens = json.loads(gist_get(TOKEN_GIST_ID, "push_tokens.json"))
-    print(f"Registered devices: {len(tokens)}")
+    if not subscriptions:
+        print("No push subscriptions - nothing to send.")
+        return
 
-    # Load notification history (hashes of stories already notified about)
-    try:
-        notif_hashes = set(json.loads(gist_get(NOTIF_HISTORY_GIST_ID, "notif_hashes.json")))
-    except Exception:
-        notif_hashes = set()
-    print(f"Previously notified: {len(notif_hashes)} stories")
+    print("Fetching RSS...")
+    seen, fresh = set(), []
+    for q in QUERIES:
+        for s in fetch_rss(q, hours=24):
+            if s["url"] not in seen:
+                seen.add(s["url"])
+                fresh.append(s)
+    print(f"  Raw stories: {len(fresh)}")
 
-    # Fetch today's stories
-    stories = fetch_fresh_stories(cutoff)
-    print(f"Fresh stories today: {len(stories)}")
-
-    # Filter out already-notified
-    new_stories = []
-    new_hashes = set()
-    for s in stories:
+    new_stories, new_hashes = [], set()
+    for s in fresh:
         h = hashlib.md5(s["url"].encode()).hexdigest()
         if h not in notif_hashes:
             new_stories.append(s)
             new_hashes.add(h)
-
-    print(f"New (not yet notified): {len(new_stories)}")
+    print(f"  New stories: {len(new_stories)}")
 
     if len(new_stories) < 2:
-        print("Fewer than 2 new stories — skipping notification to avoid noise.")
+        print("< 2 new stories - skipping.")
         return
 
-    # Build notification
-    count = len(new_stories)
-    top_title = new_stories[0]["title"][:80] + ("..." if len(new_stories[0]["title"]) > 80 else "")
-    notif_title = f"\U0001F6A8 {count} new mobility {'story' if count == 1 else 'stories'} today"
-    notif_body = top_title
+    new_stories.sort(key=lambda x: x["pub_dt"], reverse=True)
+    title = f"\U0001f6a8 {len(new_stories)} new mobility stories today"
+    body  = new_stories[0]["title"][:100]
+    url   = "https://mobility-mti.netlify.app/"
+    print(f"Sending: {title}")
 
-    print(f"Sending: {notif_title}")
-    print(f"Body: {notif_body}")
+    ok, fail, dead = 0, 0, []
+    for i, sub in enumerate(subscriptions):
+        if send_web_push(sub, title, body, url):
+            ok += 1
+        else:
+            fail += 1
+            dead.append(i)
+    print(f"  ok={ok} fail={fail}")
 
-    send_expo_notifications(tokens, notif_title, notif_body, data={"screen": "Feed"})
+    if dead:
+        subscriptions = [s for i, s in enumerate(subscriptions) if i not in dead]
+        print(f"  Pruned {len(dead)} dead sub(s)")
 
-    # Save updated hashes
-    updated = list(notif_hashes | new_hashes)[-3000:]
-    gist_patch(NOTIF_HISTORY_GIST_ID, "notif_hashes.json", json.dumps(updated))
-    print(f"Saved {len(updated)} notification hashes")
-    print("=== Done ===")
+    updated = list(notif_hashes | new_hashes)[-5000:]
+    gist_patch(TOKEN_GIST_ID, {
+        "push_subs.json":    {"content": json.dumps(subscriptions, indent=2)},
+        "notif_hashes.json": {"content": json.dumps(updated,       indent=2)},
+    })
+    print("Done.")
 
 if __name__ == "__main__":
     main()
