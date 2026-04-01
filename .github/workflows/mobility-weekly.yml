@@ -26,4 +26,5 @@ jobs:
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           GH_PAT: ${{ secrets.GH_PAT }}
           HISTORY_GIST_ID: ${{ secrets.HISTORY_GIST_ID }}
+          STORIES_GIST_ID: ${{ secrets.STORIES_GIST_ID }}
         run: python scripts/mobility_email.py
