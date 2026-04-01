@@ -5,7 +5,6 @@ on:
     # Every Sunday at 14:30 UTC = 8:00 PM IST
     - cron: '30 14 * * 0'
   workflow_dispatch:
-    # Allow manual runs from GitHub UI
 
 jobs:
   send-brief:
@@ -25,6 +24,6 @@ jobs:
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           HISTORY_GIST_ID: ${{ secrets.HISTORY_GIST_ID }}
         run: python scripts/mobility_email.py
