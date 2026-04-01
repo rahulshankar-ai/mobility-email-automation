@@ -1,28 +1,24 @@
 name: Daily Mobility Notifier
-
 on:
   schedule:
-    # Every day at 2:30 AM UTC = 8:00 AM IST
-    - cron: '30 2 * * *'
+    - cron: '30 2 * * *'   # Daily 8 AM IST (2:30 UTC)
   workflow_dispatch:
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install dependencies
+        run: pip install pywebpush
       - name: Send daily push notifications
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-          TOKEN_GIST_ID: ${{ secrets.TOKEN_GIST_ID }}
-          NOTIF_HISTORY_GIST_ID: ${{ secrets.TOKEN_GIST_ID }}
+          GH_PAT:            ${{ secrets.GH_PAT }}
+          TOKEN_GIST_ID:     ${{ secrets.TOKEN_GIST_ID }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_PUBLIC_KEY:  ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_SUBJECT:     mailto:rahul.shankar@nammayatri.in
         run: python scripts/daily_notify.py
