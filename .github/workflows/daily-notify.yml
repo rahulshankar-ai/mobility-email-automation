@@ -1,0 +1,28 @@
+name: Daily Mobility Notifier
+
+on:
+  schedule:
+    # Every day at 2:30 AM UTC = 8:00 AM IST
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Send daily push notifications
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          TOKEN_GIST_ID: ${{ secrets.TOKEN_GIST_ID }}
+          NOTIF_HISTORY_GIST_ID: ${{ secrets.TOKEN_GIST_ID }}
+        run: python scripts/daily_notify.py
